@@ -177,9 +177,26 @@ static void process_message(Context *ctx)
     Message *message = mailbox_dequeue(ctx);
     term msg = message->message;
 
-    term pid = term_get_tuple_element(msg, 1);
-    term ref = term_get_tuple_element(msg, 2);
-    term req = term_get_tuple_element(msg, 3);
+    if (!term_is_tuple(msg) ||
+            term_get_tuple_arity(msg) != 3 ||
+            term_get_tuple_element(msg, 0) != context_make_atom(ctx, "\x5" "$call")) {
+        goto invalid_message;
+    }
+
+    term from = term_get_tuple_element(msg, 1);
+    if (!term_is_tuple(from) || term_get_tuple_arity(from) != 2) {
+        goto invalid_message;
+    }
+
+    term req = term_get_tuple_element(msg, 2);
+    if (!term_is_tuple(req) || term_get_tuple_arity(req) < 1) {
+        goto invalid_message;
+    }
+
+    term pid = term_get_tuple_element(from, 0);
+    if (!term_is_pid(pid)) {
+        goto invalid_message;
+    }
 
     term cmd = term_get_tuple_element(req, 0);
 
@@ -196,7 +213,7 @@ static void process_message(Context *ctx)
         fprintf(stderr, "\n");
     }
 
-    if (UNLIKELY(memory_ensure_free(ctx, REF_SIZE + TUPLE_SIZE(2)) != MEMORY_GC_OK)) {
+    if (UNLIKELY(memory_ensure_free(ctx, TUPLE_SIZE(3)) != MEMORY_GC_OK)) {
         abort();
     }
 
@@ -205,12 +222,22 @@ static void process_message(Context *ctx)
     epd_hl_update_screen((EpdiyHighlevelState *) ctx->platform_data, MODE_GC16, temperature);
     epd_poweroff();
 
-    term return_tuple = term_alloc_tuple(2, ctx);
-
-    term_put_tuple_element(return_tuple, 0, ref);
-    term_put_tuple_element(return_tuple, 1, OK_ATOM);
+    term return_tuple = term_alloc_tuple(3, ctx);
+    term_put_tuple_element(return_tuple, 0, context_make_atom(ctx, "\x6" "$reply"));
+    term_put_tuple_element(return_tuple, 1, from);
+    term_put_tuple_element(return_tuple, 2, OK_ATOM);
 
     mailbox_send(target, return_tuple);
+
+    free(message);
+
+    return;
+
+invalid_message:
+    fprintf(stderr, "Got invalid message: ");
+    term_display(stderr, msg, ctx);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Expected gen_server call.\n");
 
     free(message);
 }
@@ -222,10 +249,15 @@ static void consume_display_mailbox(Context *ctx)
     }
 }
 
-void display_port_driver_init(Context *ctx, term opts)
+Context *display_create_port(GlobalContext *global, term opts)
 {
     UNUSED(opts);
 
+    Context *ctx = context_new(global);
+    if (IS_NULL_PTR(ctx)) {
+        fprintf(stderr, "Out of memory.");
+        return NULL;
+    }
     ctx->native_handler = consume_display_mailbox;
 
     EpdiyHighlevelState *hl = calloc(sizeof(EpdiyHighlevelState), 1);
@@ -244,4 +276,10 @@ void display_port_driver_init(Context *ctx, term opts)
     epd_hl_update_screen((EpdiyHighlevelState *) ctx->platform_data, MODE_GC16, temperature);
 
     epd_poweroff();
+
+    return ctx;
+}
+
+void display_init(GlobalContext *global)
+{
 }
