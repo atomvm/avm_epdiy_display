@@ -211,6 +211,11 @@ static void process_message(Context *ctx)
 
     if (cmd == context_make_atom(ctx, "\x6"
                                       "update")) {
+        // let's do a full clear to avoid ghost effect
+        // TODO: let's find a better approach that doesn't require any full clear
+        int temperature = epd_ambient_temperature();
+        epd_fullclear((EpdiyHighlevelState *) ctx->platform_data, temperature);
+
         term display_list = term_get_tuple_element(req, 1);
         execute_commands(ctx, display_list);
 
