@@ -10,15 +10,17 @@
 #include <epd_driver.h>
 #include <epd_highlevel.h>
 
+#include "ufontlib.h"
 #include "default16px_font.h"
-
-#define AVM_EPDIY_ENABLE_CUSTOM_FONT CONFIG_AVM_EPDIY_ENABLE_CUSTOM_FONT
 
 static void consume_display_mailbox(Context *ctx);
 
-#if AVM_EPDIY_ENABLE_CUSTOM_FONT == true
-extern const EpdFont avm_epdiy_custom_font;
-#endif
+UFontManager *ufont_manager;
+
+void ufont_draw_pixel(int x, int y, uint8_t color, void *framebuffer)
+{
+    epd_draw_pixel(x, y, color, framebuffer);
+}
 
 inline static float luma_rec709(uint8_t r, uint8_t g, uint8_t b)
 {
@@ -59,7 +61,7 @@ static void draw_rect(uint8_t *framebuffer, int x, int y, int width, int height,
     epd_draw_rect(rect, grey(r, g, b), framebuffer);
 }
 
-static void draw_text(uint8_t *framebuffer, int x, int y, const EpdFont *font, const char *text,
+static void draw_text(uint8_t *framebuffer, int x, int y, const UFontData *font, const char *text,
     uint8_t r, uint8_t g, uint8_t b, uint8_t bgr, uint8_t bgg, uint8_t bgb)
 {
     if (!font) {
@@ -81,7 +83,7 @@ static void draw_text(uint8_t *framebuffer, int x, int y, const EpdFont *font, c
         }
     } else {
         y += font->ascender;
-        epd_write_default(font, text, &x, &y, framebuffer);
+        ufont_write_default(font, text, &x, &y, framebuffer);
     }
 }
 
@@ -138,19 +140,23 @@ static void execute_command(Context *ctx, term req)
         int ok;
         char *text = interop_term_to_string(text_term, &ok);
 
-        const EpdFont *font = NULL;
+        const UFontData *loaded_font = NULL;
         if (font_name != context_make_atom(ctx, "\xB"
                                                 "default16px")) {
-#if AVM_EPDIY_ENABLE_CUSTOM_FONT == true
-            font = &avm_epdiy_custom_font;
-#else
-            fprintf(stderr, "unsupported font: ");
-            term_display(stderr, font, ctx);
-            fprintf(stderr, "\n");
-#endif
+            AtomString handle_atom = globalcontext_atomstring_from_term(ctx->global, font_name);
+            char handle[255];
+            atom_string_to_c(handle_atom, handle, sizeof(handle));
+            loaded_font = ufont_manager_find_by_handle(ufont_manager, handle);
+
+            if (!loaded_font) {
+                fprintf(stderr, "unsupported font: ");
+                term_display(stderr, font_name, ctx);
+                fprintf(stderr, "\n");
+                return;
+            }
         }
 
-        draw_text(framebuffer, x, y, font, text, (fgcolor >> 16) & 0xFF, (fgcolor >> 8) & 0xFF,
+        draw_text(framebuffer, x, y, loaded_font, text, (fgcolor >> 16) & 0xFF, (fgcolor >> 8) & 0xFF,
             fgcolor & 0xFF, (bgcolor >> 16) & 0xFF, (bgcolor >> 8) & 0xFF, bgcolor & 0xFF);
 
         free(text);
@@ -207,6 +213,16 @@ static void process_message(Context *ctx)
                                       "update")) {
         term display_list = term_get_tuple_element(req, 1);
         execute_commands(ctx, display_list);
+
+    } else if (cmd == context_make_atom(ctx, "\xD" "register_font")) {
+        term font_bin = term_get_tuple_element(req, 2);
+        UFontData *loaded_font = ufont_parse(term_binary_data(font_bin), term_binary_size(font_bin));
+
+        AtomString handle_atom = globalcontext_atomstring_from_term(ctx->global, term_get_tuple_element(req, 1));
+        char handle[255];
+        atom_string_to_c(handle_atom, handle, sizeof(handle));
+        ufont_manager_register(ufont_manager, handle, loaded_font);
+
     } else {
         fprintf(stderr, "unsupported command: ");
         term_display(stderr, req, ctx);
@@ -259,6 +275,8 @@ Context *display_create_port(GlobalContext *global, term opts)
         return NULL;
     }
     ctx->native_handler = consume_display_mailbox;
+
+    ufont_manager = ufont_manager_new();
 
     EpdiyHighlevelState *hl = calloc(sizeof(EpdiyHighlevelState), 1);
     epd_init(EPD_OPTIONS_DEFAULT);
