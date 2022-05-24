@@ -168,14 +168,24 @@ static void execute_command(Context *ctx, term req)
     }
 }
 
-static void execute_commands(Context *ctx, term display_list)
+static void do_update(Context *ctx, term display_list)
 {
-    term t = display_list;
+    int proper;
+    int len = term_list_length(display_list, &proper);
 
-    while (term_is_nonempty_list(t)) {
-        execute_command(ctx, term_get_list_head(t));
+    term *items = malloc(sizeof(term) * len);
+
+    term t = display_list;
+    for (int i = len - 1; i >= 0; i--) {
+        items[i] = term_get_list_head(t);
         t = term_get_list_tail(t);
     }
+
+    for (int i = 0; i < len; i++) {
+        execute_command(ctx, items[i]);
+    }
+
+    free(items);
 }
 
 static void process_message(Context *ctx)
@@ -217,7 +227,7 @@ static void process_message(Context *ctx)
         epd_fullclear((EpdiyHighlevelState *) ctx->platform_data, temperature);
 
         term display_list = term_get_tuple_element(req, 1);
-        execute_commands(ctx, display_list);
+        do_update(ctx, display_list);
 
     } else if (cmd == context_make_atom(ctx, "\xD" "register_font")) {
         term font_bin = term_get_tuple_element(req, 2);
